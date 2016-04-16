@@ -5,14 +5,30 @@
 #include <iostream>
 #include <cmath>
 #include <algorithm>
+//
+#include <limits>
+#include <type_traits>
 
 using namespace cv;
 using namespace std;
 
 RNG rng(12345);
 int thresh = 100;
+const float epsilon = std::numeric_limits<float>::epsilon();
 
 HOGDescriptor hog;
+
+// url: http://en.cppreference.com/w/cpp/types/numeric_limits/epsilon
+template<class T>
+typename std::enable_if<!std::numeric_limits<T>::is_integer, bool>::type
+almost_equal(T x, T y, int ulp)
+{
+    // the machine epsilon has to be scaled to the magnitude of the values used
+    // and multiplied by the desired precision in ULPs (units in the last place)
+    return std::abs(x-y) < std::numeric_limits<T>::epsilon() * std::abs(x+y) * ulp
+            // unless the result is subnormal
+            || std::abs(x-y) < std::numeric_limits<T>::min();
+}
 
 void help()
 { 
@@ -22,6 +38,11 @@ void help()
          << endl;
 }
 
+/**
+/** * @brief median
+/** * @param v
+/** * @return
+/** */
 float median(vector<float> &v)
 {
     size_t n = v.size() / 2;
@@ -32,7 +53,7 @@ float median(vector<float> &v)
 void rotate(cv::Mat& src, double angle, cv::Mat& dst)
 {
     cv::Point2f pt(src.cols/2.0, src.rows/2.0);
-    cv::Mat r = cv::getRotationMatrix2D(pt, angle, 1.0); 
+    cv::Mat r = cv::getRotationMatrix2D(pt, angle, 1.0);
     cv::Rect bbox = cv::RotatedRect(pt, src.size(), angle).boundingRect();
     r.at<double>(0,2) += bbox.width/2.0 - pt.x;
     r.at<double>(1,2) += bbox.height/2.0 - pt.y;
@@ -43,24 +64,27 @@ void rotate(cv::Mat& src, double angle, cv::Mat& dst)
 // Input: An edge detected image.
 double find_rotation_angle(cv::Mat& edges)
 {
-    vector<Vec4i> lines;
+    vector<Vec4f> lines;
     vector<float> slopes;
 
     HoughLinesP(edges, lines, 1, CV_PI/180, 100, 50, 10 );
     if(lines.size() == 0) {
-        std::cout << "Not enough lines in this image!" << std::endl;        
+        std::cout << "Not enough lines in this image!" << std::endl;
         exit(-1);
     }
 
+    float slope;
+    const float max_value = std::numeric_limits<float>::max();
     for( size_t i = 0; i < lines.size(); i++ ) {
-        Vec4i l = lines[i];
-        //line(c_src , Point(l[0], l[1]), Point(l[2], l[3]), Scalar(0,0,255), 3, CV_AA);
-        slopes.push_back((abs(l[0] - l[2]) < 0.0000001) ? 1000000 : (l[1]-l[3]) / (float)(l[0]-l[2]));
+        Vec4f l = lines[i];
+        // url: http://en.cppreference.com/w/cpp/types/numeric_limits/epsilon
+        slope = almost_equal(l[0], l[2], 2) ? max_value : (l[1]-l[3]) / (float)(l[0]-l[2]);
+        slopes.push_back(slope);
     }
 
     double rotation = atan(median(slopes)) * 180.0/CV_PI;
     
-    return rotation; 
+    return rotation;
 }
 
 void horiz_projection(Mat& img, vector<int>& histo)
@@ -68,7 +92,7 @@ void horiz_projection(Mat& img, vector<int>& histo)
     //Mat proj = Mat::zeros(img.rows, img.cols, img.type());
     int count, i, j;
 
-    for(i=0; i < img.rows; i++) {   
+    for(i=0; i < img.rows; i++) {
         for(count = 0, j=0; j < img.cols; j++) {
             count += (img.at<int>(i, j)) ? 0:1;
         }
@@ -85,7 +109,7 @@ void vert_projection(Mat& img, vector<int>& histo)
     Mat proj = Mat::zeros(img.rows, img.cols, img.type());
     int count, i, j, k;
 
-    for(i=0; i < img.cols; i++) {   
+    for(i=0; i < img.cols; i++) {
         for(count = 0, j=0; j < img.rows; j++) {
             for(k=0; k < img.channels(); k++) {
                 count += (img.at<int>(j, i, k)) ? 0:1;
@@ -102,21 +126,21 @@ void vert_projection(Mat& img, vector<int>& histo)
 void remove_staff(Mat& img, int index)
 {
     for(int x = 0; x < img.cols; x++) {
-        if(img.at<uchar>(index, x) == 0) { 
+        if(img.at<uchar>(index, x) == 0) {
             int sum = 0;
             for(int y = -3; y <= 3; y++) {
                 if(index + y > 0 && index + y < img.rows) {
-                    sum += img.at<uchar>(index+y, x);                    
+                    sum += img.at<uchar>(index+y, x);
                 }
-            } 
+            }
             if(sum >1000) {
                 for(int y = -2; y <= 2; y++) {
                     if(index + y > 0 && index + y < img.rows) {
                         img.at<uchar>(index+y, x) = 255;
                     }
-                } 
+                }
             }
-        }    
+        }
     }
 }
 
@@ -143,15 +167,15 @@ void remove_staff2(Mat& orig, Mat& img, int index)
     char r = rng.uniform(0, 255);
 
     for(int x = 0; x < img.cols; x++) {
-        if(img.at<uchar>(index, x) == 0) { 
+        if(img.at<uchar>(index, x) == 0) {
             vector<Point> pts;
-            flood_line(img, Point(x, index), pts);            
+            flood_line(img, Point(x, index), pts);
             for( vector<Point>::iterator it = pts.begin(); it != pts.end(); ++it) {
                 orig.at<Vec3b>(it->y, it->x)[0] = b;
                 orig.at<Vec3b>(it->y, it->x)[1] = g;
                 orig.at<Vec3b>(it->y, it->x)[2] = r;
             }
-        }    
+        }
     }
 }
 
@@ -169,7 +193,7 @@ void find_contours(int t, Mat& threshold_output, vector<Rect>& boundRect)
     vector<float>radius( contours.size() );
     boundRect.resize( contours.size() );
 
-    for( int i = 0; i < contours.size(); i++ ) { 
+    for( int i = 0; i < contours.size(); i++ ) {
         approxPolyDP( Mat(contours[i]), contours_poly[i], 3, true );
         boundRect[i] = boundingRect( Mat(contours_poly[i]) );
     }
@@ -177,9 +201,9 @@ void find_contours(int t, Mat& threshold_output, vector<Rect>& boundRect)
     // Draw polygonal contour + bounding rects + circles
     Mat drawing = Mat::zeros( threshold_output.size(), CV_8UC3 );
     for( int i = 0; i < contours.size(); i++ ) {
-       Scalar color = Scalar( rng.uniform(0, 255), rng.uniform(0,255), rng.uniform(0,255) );
-       drawContours( drawing, contours_poly, i, color, 1, 8, vector<Vec4i>(), 0, Point() );
-       rectangle( drawing, boundRect[i].tl(), boundRect[i].br(), color, 2, 8, 0 );
+        Scalar color = Scalar( rng.uniform(0, 255), rng.uniform(0,255), rng.uniform(0,255) );
+        drawContours( drawing, contours_poly, i, color, 1, 8, vector<Vec4i>(), 0, Point() );
+        rectangle( drawing, boundRect[i].tl(), boundRect[i].br(), color, 2, 8, 0 );
     }
 
     imshow( "Contours", drawing );
@@ -209,7 +233,7 @@ int main(int argc, char** argv)
     double angle = find_rotation_angle(edges);
     
     std::cout << "Rotating image by "
-              << abs(angle) 
+              << abs(angle)
               << " degrees ";
     if(angle > 0) { std::cout << "counter-"; }
     std::cout << "clockwise."  << std::endl;
@@ -221,8 +245,8 @@ int main(int argc, char** argv)
     threshold(g_src, bw_src, 100, 255, CV_THRESH_BINARY);//|CV_THRESH_OTSU);
     imshow("B&W", bw_src);
     
-    vector<int> horiz_proj; 
-    vector<int> vert_proj; 
+    vector<int> horiz_proj;
+    vector<int> vert_proj;
     
     horiz_projection(bw_src, horiz_proj);
     vert_projection(bw_src, vert_proj);
@@ -231,7 +255,7 @@ int main(int argc, char** argv)
     int max = *std::max_element(horiz_proj.begin(), horiz_proj.end());
     for(int i = 0; i < horiz_proj.size(); i++) {
         if(horiz_proj[i] > max/8.0) {
-            remove_staff(bw_src, i); 
+            remove_staff(bw_src, i);
         }
     }
     imshow("No Staff", bw_src);
@@ -255,10 +279,10 @@ int main(int argc, char** argv)
     cout << "img dimensions: " << img.cols << " width x " << img.rows << " height" << endl;
     cout << "Found " << descriptorsValues.size() << " descriptor values" << endl;
     cout << "Nr of locations specified : " << locations.size() << endl;
-/*
+    /*
     for(int i = 0; i<bboxes.size(); i++) {
         if(bboxes[i].width * bboxes[i].height < 100) { continue; }
-        imshow("small", bw_src(range(bboxes[i].y, bboxes[i].y+bboxes[i].height), range(bboxes[i].x, bboxes[i].x + bboxes[i].width)));    
+        imshow("small", bw_src(range(bboxes[i].y, bboxes[i].y+bboxes[i].height), range(bboxes[i].x, bboxes[i].x + bboxes[i].width)));
         waitKey();
     }*/
     waitKey();
